@@ -9,7 +9,7 @@ app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: { origin: "*" },
-    maxHttpBufferSize: 10 * 1024 * 1024 // 支持大图片传输
+    maxHttpBufferSize: 20 * 1024 * 1024 // 支持大图片和音频传输
 });
 
 const tokenIcons = ["🐶", "🐱", "🐻", "🐰", "🐼", "🐨", "🦁", "🦊", "🐯", "🐵"];
@@ -38,7 +38,7 @@ io.on('connection', (socket) => {
         gameState.players.push(newPlayer);
         socket.emit('init_player', newPlayer);
 
-        io.emit('log_message', `🎉 ${newPlayer.name} (${newPlayer.icon}) 加入了游戏！`);
+        io.emit('log_message', `🎉 ${newPlayer.name} (${newPlayer.icon}) 加入了游戏！ / Joined the game!`);
         io.emit('update_game_state', gameState);
     });
 
@@ -51,44 +51,52 @@ io.on('connection', (socket) => {
 
         setTimeout(() => {
             let oldPos = currPlayer.position;
-            currPlayer.position = (currPlayer.position + steps) % 24;
+            currPlayer.position = (currPlayer.position + steps) % 18;
 
             if(currPlayer.position < oldPos) {
                 currPlayer.gold += 500;
-                io.emit('log_message', `🎉 ${currPlayer.name} 绕过起点一圈，奖励 500 金币！`);
+                io.emit('log_message', `🎉 ${currPlayer.name} 绕过起点一圈，奖励 500 金币！ / Bonus 500 gold!`);
             }
 
-            io.emit('log_message', `🎲 ${currPlayer.name} 掷出 ${steps} 点，移动到了第 ${currPlayer.position} 格。`);
+            // 处理 7 个功能性格子逻辑
+            let landPos = currPlayer.position;
+            if (landPos === 2) { // REWARD: 随机积分
+                let bonus = Math.floor(Math.random() * 3 + 1) * 100;
+                currPlayer.gold += bonus;
+                io.emit('log_message', `🎁 ${currPlayer.name} 触发奖励格 (Reward)，获得随机积分 +${bonus}！`);
+            } else if (landPos === 4) { // STOP: 暂停一回合
+                io.emit('log_message', `🛑 ${currPlayer.name} 触发暂停格 (Stop)，暂停一回合！`);
+            } else if (landPos === 7 || landPos === 16) { // PUNISH: 后退1步
+                currPlayer.position = (currPlayer.position - 1 + 18) % 18;
+                io.emit('log_message', `⚡ ${currPlayer.name} 触发惩罚格 (Punish)，后退 1 步至第 ${currPlayer.position} 格！(Back 1 step)`);
+            } else if (landPos === 13) { // CHANCE: 再扔一次
+                io.emit('log_message', `🎲 ${currPlayer.name} 触发机会格 (Chance)，获得再扔一次的机会！(Roll again)`);
+            }
+
+            io.emit('log_message', `🎲 ${currPlayer.name} 移动到了第 ${currPlayer.position} 格。 (Moved to cell ${currPlayer.position})`);
             io.emit('update_game_state', gameState);
 
-            // 触发图片实操闯关（若该格被老师设定为了图片任务，或默认抽查）
-            // 演示逻辑：触发当前玩家的图片上传任务，限时 5 分钟
-            io.emit('trigger_image_quiz', { playerId: currPlayer.id, position: currPlayer.position });
+            // 触发题目或实操任务
+            io.emit('trigger_quiz_task', { playerId: currPlayer.id, position: currPlayer.position });
 
         }, 2200);
     });
 
-    // 接收学生上传的作业图片
     socket.on('upload_homework_image', (data) => {
-        io.emit('log_message', `📤 ${data.playerName} 已提交实操图片，等待老师批改...`);
-        // 转发给老师端弹窗显示
+        io.emit('log_message', `📤 ${data.playerName} 已提交实操图片作业，等待老师批改... / Submitted homework.`);
         io.emit('teacher_review_homework', data);
     });
 
-    // 老师端批改结果反馈
     socket.on('teacher_grade_decision', (data) => {
         let currPlayer = gameState.players[gameState.currentPlayerIndex];
         if (!currPlayer) return;
 
         if (data.passed) {
-            io.emit('log_message', `✅ 老师批改通过！${currPlayer.name} 成功过关。`);
+            io.emit('log_message', `✅ 老师批改通过！${currPlayer.name} 成功过关。 / Passed!`);
         } else {
-            io.emit('log_message', `❌ 老师批改不通过！${currPlayer.name} 留在原地，准备轮到下一位。`);
-            // 不通过则退回原地
-            // 此处可根据需求调整退回逻辑
+            io.emit('log_message', `❌ 老师批改不通过！${currPlayer.name} 留在原地。 / Failed to pass.`);
         }
 
-        // 切换到下一位玩家
         gameState.currentPlayerIndex = (gameState.currentPlayerIndex + 1) % gameState.players.length;
         io.emit('update_game_state', gameState);
     });
