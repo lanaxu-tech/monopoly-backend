@@ -20,15 +20,33 @@ let gameState = {
     currentPlayerIndex: 0
 };
 
-// 💾 持久化存储：在后端内存中保存教师录入的题目（即使学生刷新网页，题目也不会丢）
+// 后端持久化保存教师录入的题库
 let customCellQuestions = {};
 
 io.on('connection', (socket) => {
     console.log(`用户连接: ${socket.id}`);
 
-    // 新用户连接时，立即把当前已录入的题目同步给他
+    // 新连接时同步当前题库
     socket.emit('sync_questions', customCellQuestions);
 
+    // 教师端登录验证
+    socket.on('teacher_login', (data) => {
+        if (data.password === "1020#") {
+            socket.emit('teacher_login_success');
+        } else {
+            socket.emit('teacher_login_fail', "密码错误 (Password Incorrect)");
+        }
+    });
+
+    // 教师端保存题库并同步全网
+    socket.on('save_teacher_question', (data) => {
+        customCellQuestions[data.cellIdx] = data.questionData;
+        console.log(`教师已更新第 ${data.cellIdx} 号格子的题目`);
+        io.emit('sync_questions', customCellQuestions);
+        io.emit('log_message', `🧑‍🏫 教师更新了第 ${data.cellIdx} 号格子的题库内容！`);
+    });
+
+    // 学生加入游戏
     socket.on('join_game', (data) => {
         if(gameState.players.length >= 10) return;
 
@@ -43,21 +61,13 @@ io.on('connection', (socket) => {
 
         gameState.players.push(newPlayer);
         socket.emit('init_player', newPlayer);
-        socket.emit('sync_questions', customCellQuestions); // 确保初始化时同步题目
+        socket.emit('sync_questions', customCellQuestions);
 
-        io.emit('log_message', `🎉 ${newPlayer.name} (${newPlayer.icon}) 加入了游戏！ / Joined the game!`);
+        io.emit('log_message', `🎉 ${newPlayer.name} (${newPlayer.icon}) 加入了游戏！`);
         io.emit('update_game_state', gameState);
     });
 
-    // 接收老师保存的题目，并广播给全网所有客户端
-    socket.on('save_teacher_question', (data) => {
-        customCellQuestions[data.cellIdx] = data.questionData;
-        console.log(`教师已更新第 ${data.cellIdx} 号格子的题目`);
-        // 广播给所有人，确保前端数据一致
-        io.emit('sync_questions', customCellQuestions);
-        io.emit('log_message', `🧑‍🏫 教师更新了第 ${data.cellIdx} 号格子的题库内容！`);
-    });
-
+    // 投掷骰子及移动
     socket.on('roll_dice', () => {
         let currPlayer = gameState.players[gameState.currentPlayerIndex];
         if(!currPlayer || currPlayer.id !== socket.id) return;
@@ -71,7 +81,7 @@ io.on('connection', (socket) => {
 
             if(currPlayer.position < oldPos) {
                 currPlayer.gold += 500;
-                io.emit('log_message', `🎉 ${currPlayer.name} 绕过起点一圈，奖励 500 金币！ / Bonus 500 gold!`);
+                io.emit('log_message', `🎉 ${currPlayer.name} 绕过起点一圈，奖励 500 金币！`);
             }
 
             let landPos = currPlayer.position;
@@ -91,24 +101,33 @@ io.on('connection', (socket) => {
             io.emit('log_message', `🎲 ${currPlayer.name} 移动到了第 ${currPlayer.position} 格。`);
             io.emit('update_game_state', gameState);
 
-            io.emit('trigger_quiz_task', { playerId: currPlayer.id, position: currPlayer.position });
+            // 触发格子任务并【实时同步题目到公屏和教师端】
+            let qData = customCellQuestions[landPos] || null;
+            io.emit('trigger_quiz_task', { 
+                playerId: currPlayer.id, 
+                playerName: currPlayer.name,
+                position: landPos,
+                questionData: qData 
+            });
 
         }, 2200);
     });
 
+    // 学生提交作业图片 -> 实时推送给教师端批改
     socket.on('upload_homework_image', (data) => {
-        io.emit('log_message', `📤 ${data.playerName} 已提交实操图片作业，等待老师批改...`);
-        io.emit('teacher_review_homework', data);
+        io.emit('log_message', `📤 ${data.playerName} 已提交实操图片作业，请教师端批改。`);
+        io.emit('teacher_review_homework', data); // 教师端专属接收
     });
 
+    // 教师端批改结果反馈
     socket.on('teacher_grade_decision', (data) => {
         let currPlayer = gameState.players[gameState.currentPlayerIndex];
         if (!currPlayer) return;
 
         if (data.passed) {
-            io.emit('log_message', `✅ 老师批改通过！${currPlayer.name} 成功过关。`);
+            io.emit('log_message', `✅ 教师批改通过！${currPlayer.name} 成功过关。`);
         } else {
-            io.emit('log_message', `❌ 老师批改不通过！${currPlayer.name} 留在原地。`);
+            io.emit('log_message', `❌ 教师批改不通过！${currPlayer.name} 留在原地。`);
         }
 
         gameState.currentPlayerIndex = (gameState.currentPlayerIndex + 1) % gameState.players.length;
